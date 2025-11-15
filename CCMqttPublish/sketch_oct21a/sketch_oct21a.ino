@@ -5,6 +5,10 @@
 #include <NTPClient.h>
 #include <PubSubClient.h>
 #include "core_cm4.h"  // Needed for NVIC_SystemReset()
+#include "arduino_secrets.h" 
+
+char ssid[] = SECRET_SSID;        // your network SSID (name)
+char password[] = SECRET_PASS;    // your network password (use for WPA, or use as key for WEP)
 
 
 //includes for e-ink display
