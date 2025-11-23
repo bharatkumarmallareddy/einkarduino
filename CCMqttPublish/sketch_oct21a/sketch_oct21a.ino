@@ -7,20 +7,12 @@
 #include "core_cm4.h"  // Needed for NVIC_SystemReset()
 #include "arduino_secrets.h" 
 
-char ssid[] = SECRET_SSID;        // your network SSID (name)
-char password[] = SECRET_PASS;    // your network password (use for WPA, or use as key for WEP)
-
-
-//includes for e-ink display
-//#include <GxEPD2_BW.h>
-//#include <Fonts/FreeMonoBold9pt7b.h>
-
-//GxEPD2_BW<GxEPD2_290, GxEPD2_290::HEIGHT> display(GxEPD2_290(/*CS=*/ 10, /*DC=*/ 9, /*RST=*/ 8, /*BUSY=*/ 7));
-//void myeinkrefresh();
-
-
+#define LOOP_DELAY 1000
 
 // Wi-Fi credentials
+
+char ssid[] = SECRET_SSID;        // your network SSID (name)
+char password[] = SECRET_PASS;    // your network password (use for WPA, or use as key for WEP)
 
 
 // MQTT broker (Raspberry Pi)
@@ -34,8 +26,16 @@ NTPClient timeClient(ntpUDP, "pool.ntp.org", 19800, 60000); // IST offset
 WiFiClient wifiClient;
 PubSubClient mqttClient(wifiClient);
 
+//FileManagement
+String fileName = "MES01";
+
 // INA219 sensor
 Adafruit_INA219 ina219;
+
+//WiFiMQtt state Mgmt
+static bool mqttSub = false;
+static bool wifiConnected = true;
+
 
 void callback(char* topic, byte* payload, unsigned int length) {
   Serial.print("Message arrived [");
@@ -74,100 +74,113 @@ void callback(char* topic, byte* payload, unsigned int length) {
 void setup() {
   Serial.begin(115200);
 
-
-  //display.init();
-  
-  // Full refresh example
-  //display.setFullWindow();
-  //display.firstPage();
-  /*do {
-    display.fillScreen(GxEPD_WHITE);
-    display.setTextColor(GxEPD_BLACK);
-    display.setFont(&FreeMonoBold9pt7b);
-    display.setCursor(10, 50);
-    display.println("Hello E-Ink!");
-  } while (display.nextPage());
-  Serial.println("Display init done");
-*/
+  int wifiRetryCount = 0;
+ 
   // Connect to hotspot
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
     Serial.print(".");
     delay(500);
+    wifiRetryCount++;
+    if(10 == wifiRetryCount)
+    {
+      wifiConnected = false;
+      Serial.println("Wifi Connection Failed");
+      break;
+    }
   }
-  Serial.println("WiFi connected");
 
-  Serial.print("You're connected to the network");
-  printCurrentNet();
-  printWifiData();
+  if(wifiConnected)
+  {
+    Serial.println("WiFi connected");
+
+    Serial.print("You're connected to the network");
+    printCurrentNet();
+    printWifiData();
 
   // Start NTP and INA219
-  timeClient.begin();
-  timeClient.update();
+    timeClient.begin();
+    timeClient.update();
+
+    mqttClient.setServer(mqtt_server, 1883);
+    mqttClient.setCallback(callback);
+  }
+
   ina219.begin();
 
   // Connect to MQTT broker
-  mqttClient.setServer(mqtt_server, 1883);
-  mqttClient.setCallback(callback);
+  
 }
 
-void loop() {
-//#if 1
-  static bool mqttSub = false;
-  timeClient.update();
+void measureAndPublishCurrent()
+{
 
-  // Read sensor values
   float current_mA = /*0;//*/ ina219.getCurrent_mA();
   float voltage_V = /*0;//*/ina219.getBusVoltage_V();
   float power_mW = /*0;//*/ ina219.getPower_mW();
-#if 1
+
   // Timestamp with milliseconds
   String timestamp = timeClient.getFormattedTime() + "." + String(millis() % 1000);
 
   // Format JSON payload
   String payload = "{";
+  payload += "\"file\":\""+ getMeasurementFileName() + "\",";//+ "MES01"+ "\",";
   payload += "\"timestamp\":\"" + timestamp + "\",";
   payload += "\"current_mA\":" + String(current_mA, 2) + ",";
   payload += "\"voltage_V\":" + String(voltage_V, 2) + ",";
   payload += "\"power_mW\":" + String(power_mW, 2);
   payload += "}";
 
-  // Ensure MQTT connection
-  if (!mqttClient.connected()) {
-    mqttSub = false;
-    while (!mqttClient.connect("ArduinoClient")) {
-      delay(5000);
-    }
-    
-    //mqttClient.subscribe("sensorsreset");
-  }
-  else
+  if(wifiConnected)
   {
-    if(!mqttSub)
+    mqttClient.publish("sensors/arduino_r4/current", payload.c_str());
+  }
+
+  Serial.println(payload);
+}
+
+String getMeasurementFileName()
+{
+  return fileName;
+}
+
+
+
+void loop() {
+//#if 1
+  
+  
+
+  if(wifiConnected){
+    timeClient.update();
+  // Ensure MQTT connection
+    if (!mqttClient.connected()) {
+      mqttSub = false;
+      while (!mqttClient.connect("ArduinoClient")) {
+        delay(5000);
+        Serial.println(mqttClient.state());
+      }
+    }
+    else
     {
-      mqttClient.subscribe("sensorsreset");
-      mqttClient.subscribe("brightness");
-      mqttSub = true;
-      Serial.println("TopicSubscribed");
+      if(!mqttSub)
+      {
+        mqttClient.subscribe("sensorsreset");
+        mqttClient.subscribe("brightness");
+        mqttSub = true;
+        Serial.println("TopicSubscribed");
+      }
     }
   }
 
   // Publish to topic
-  mqttClient.publish("sensors/arduino_r4/current", payload.c_str());
+ measureAndPublishCurrent();
  
-  Serial.println(payload);
- #endif
- mqttClient.loop();
-  //myeinkrefresh();
-  static int counter =0;
-  counter++;
-  Serial.println("Iteration Done");
-  Serial.println(counter);
-  if(counter >= 100)
-  {
-    counter =0;
-  }
-  delay(1000); // 1000ms sampling
+ if(wifiConnected)
+ {
+  mqttClient.loop();
+ }
+ delay(LOOP_DELAY); // 1000ms sampling
 }
 
 void printWifiData() {
@@ -222,26 +235,3 @@ void printMacAddress(byte mac[]) {
 
 
 
-#if 0
-void myeinkrefresh()
-{
-  display.setPartialWindow(0, 0, display.width(), 40);
-  display.firstPage();
-  do {
-    display.fillScreen(GxEPD_WHITE);
-    display.setCursor(10, 30);
-    display.print("Count: ");
-    display.print(millis() / 1000);
-  } while (display.nextPage());
-  
-  delay(1000);
-  
-  // Do a full refresh every 50 updates to clear ghosting
-  static int count = 0;
-  if (++count >= 50) {
-    display.setFullWindow();
-    display.refresh();
-    count = 0;
-  }
-}
-#endif
